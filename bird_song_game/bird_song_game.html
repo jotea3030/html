@@ -364,7 +364,7 @@
 
         <div id="gameContent" style="display: none;">
             <div class="info-box">
-                <p><strong>🎵 About the recordings:</strong> This game uses curated bird songs from professional field recordings. Each recording includes attribution and links to the full collection.</p>
+                <p><strong>🎵 About the recordings:</strong> This game uses curated bird songs from professional field recordings. Each recording includes attribution and links to the full coll[...]
             </div>
 
             <div class="difficulty-selector">
@@ -529,33 +529,100 @@
             audioCache: {}
         };
 
-        // Preload audio
+        // Helper: create audio element and try to load it (with crossOrigin)
+        function createAudioElement(url) {
+            const audio = new Audio();
+            // Set crossOrigin to anonymous to increase the chances of being able to decode/play cross-origin media
+            audio.crossOrigin = "anonymous";
+            audio.preload = 'auto';
+            audio.src = url;
+            return audio;
+        }
+
+        // Attempt to fetch as a fallback and return object URL
+        async function fetchAsBlobUrl(url) {
+            try {
+                const resp = await fetch(url, { mode: 'cors' });
+                if (!resp.ok) throw new Error(`Fetch failed: ${resp.status}`);
+                const blob = await resp.blob();
+                return URL.createObjectURL(blob);
+            } catch (err) {
+                console.warn('Fetch fallback failed for', url, err);
+                throw err;
+            }
+        }
+
+        // Preload audio with fallbacks
         async function preloadAudio() {
             const loadingSection = document.getElementById('loadingSection');
             const loadingDetail = loadingSection.querySelector('.loading-detail');
-            
+
             let loaded = 0;
             const total = allBirds.length;
 
             for (const bird of allBirds) {
                 try {
                     loadingDetail.textContent = `Loading ${bird.name} (${loaded + 1}/${total})...`;
-                    
-                    const audio = new Audio();
-                    audio.preload = 'auto';
-                    audio.src = bird.audioUrl;
-                    
-                    // Wait for audio to be loadable
-                    await new Promise((resolve, reject) => {
-                        audio.addEventListener('canplaythrough', resolve, { once: true });
-                        audio.addEventListener('error', reject, { once: true });
-                        audio.load();
+
+                    // Create audio element with crossOrigin
+                    let audio = createAudioElement(bird.audioUrl);
+
+                    // Try to wait for a canplaythrough or error. Some servers don't emit canplaythrough reliably,
+                    // so use a timeout and fallback to fetch->blob->objectURL if necessary.
+                    await new Promise(async (resolve, reject) => {
+                        let settled = false;
+                        const onSuccess = () => {
+                            if (settled) return;
+                            settled = true;
+                            cleanup();
+                            resolve();
+                        };
+                        const onError = (e) => {
+                            if (settled) return;
+                            settled = true;
+                            cleanup();
+                            reject(e || new Error('Audio error'));
+                        };
+                        const cleanup = () => {
+                            audio.removeEventListener('canplaythrough', onSuccess);
+                            audio.removeEventListener('loadeddata', onSuccess);
+                            audio.removeEventListener('error', onError);
+                        };
+
+                        audio.addEventListener('canplaythrough', onSuccess, { once: true });
+                        audio.addEventListener('loadeddata', onSuccess, { once: true });
+                        audio.addEventListener('error', onError, { once: true });
+
+                        // Start loading
+                        try {
+                            audio.load();
+                        } catch (err) {
+                            // Some browsers may throw synchronously
+                            console.warn('audio.load() threw', err);
+                        }
+
+                        // After timeout, try fetch fallback (if not settled)
+                        setTimeout(async () => {
+                            if (settled) return;
+                            // Try fetch fallback to create an object URL
+                            try {
+                                const blobUrl = await fetchAsBlobUrl(bird.audioUrl);
+                                // Replace audio.src with blob URL and wait for canplaythrough
+                                audio.src = blobUrl;
+                                audio.load();
+                                // Attach listener again; onSuccess/onError will handle resolution
+                            } catch (err) {
+                                onError(err);
+                            }
+                        }, 6000); // 6s timeout before fallback
                     });
-                    
+
+                    // If successful, store the audio element in cache
                     gameState.audioCache[bird.name] = audio;
                     loaded++;
                 } catch (error) {
                     console.warn(`Could not load audio for ${bird.name}:`, error);
+                    // Don't block the whole preload process; skip and move on.
                     loaded++;
                 }
             }
@@ -576,55 +643,138 @@
             startNewRound();
         }
 
-        // Play bird song
-        function playBirdSong() {
+        // Play bird song (toggle play/pause). Creates audio on demand if preload failed.
+        async function playBirdSong() {
             const playButton = document.getElementById('playButton');
             const playIcon = document.getElementById('playIcon');
             const playText = document.getElementById('playText');
 
-            // Stop current audio if playing
+            // If currently playing, pause and reset
             if (gameState.currentAudio && !gameState.currentAudio.paused) {
-                gameState.currentAudio.pause();
-                gameState.currentAudio.currentTime = 0;
+                try {
+                    gameState.currentAudio.pause();
+                    gameState.currentAudio.currentTime = 0;
+                } catch (e) {
+                    console.warn('Error pausing audio', e);
+                }
                 playButton.classList.remove('playing');
                 playIcon.textContent = '▶';
                 playText.textContent = 'Play Bird Song';
                 return;
             }
 
-            // Play new audio
-            gameState.currentAudio = gameState.audioCache[gameState.currentBird.name];
-            
-            if (gameState.currentAudio) {
-                gameState.currentAudio.currentTime = 0;
-                gameState.currentAudio.play();
-                
+            if (!gameState.currentBird) {
+                console.warn('No current bird selected for this round.');
+                return;
+            }
+
+            // Get cached audio or create it
+            let audio = gameState.audioCache[gameState.currentBird.name];
+            if (!audio) {
+                // Try to create a new Audio element and play it (on-demand)
+                audio = createAudioElement(gameState.currentBird.audioUrl);
+                // Try to load it quickly and play; if CORS blocks, fetch fallback will be attempted
+                try {
+                    await new Promise((resolve, reject) => {
+                        let settled = false;
+                        const onReady = () => {
+                            if (settled) return;
+                            settled = true;
+                            cleanup();
+                            resolve();
+                        };
+                        const onError = (e) => {
+                            if (settled) return;
+                            settled = true;
+                            cleanup();
+                            reject(e || new Error('Audio error'));
+                        };
+                        const cleanup = () => {
+                            audio.removeEventListener('canplaythrough', onReady);
+                            audio.removeEventListener('loadeddata', onReady);
+                            audio.removeEventListener('error', onError);
+                        };
+                        audio.addEventListener('canplaythrough', onReady, { once: true });
+                        audio.addEventListener('loadeddata', onReady, { once: true });
+                        audio.addEventListener('error', onError, { once: true });
+                        try { audio.load(); } catch (err) { console.warn(err); }
+                        // Fallback fetch after a short timeout:
+                        setTimeout(async () => {
+                            if (settled) return;
+                            try {
+                                const blobUrl = await fetchAsBlobUrl(gameState.currentBird.audioUrl);
+                                audio.src = blobUrl;
+                                audio.load();
+                            } catch (err) {
+                                onError(err);
+                            }
+                        }, 5000);
+                    });
+                } catch (err) {
+                    console.warn('On-demand audio load failed, trying fetch fallback:', err);
+                    try {
+                        const blobUrl = await fetchAsBlobUrl(gameState.currentBird.audioUrl);
+                        audio.src = blobUrl;
+                        // hope it will play; do not await further
+                    } catch (err2) {
+                        console.warn('Fetch fallback also failed:', err2);
+                    }
+                }
+                // Store audio in cache to reuse later
+                gameState.audioCache[gameState.currentBird.name] = audio;
+            }
+
+            gameState.currentAudio = audio;
+            try {
+                audio.currentTime = 0;
+            } catch (e) {
+                // currentTime might throw if audio not seekable yet
+            }
+
+            // Attempt to play, and handle promise rejection (user gesture / autoplay policies)
+            const playPromise = audio.play();
+            if (playPromise !== undefined) {
+                playPromise.then(() => {
+                    playButton.classList.add('playing');
+                    playIcon.textContent = '⏸';
+                    playText.textContent = 'Pause';
+                }).catch((err) => {
+                    console.warn('Playback failed:', err);
+                    // Inform the user in a non-intrusive way
+                    alert('Playback failed. The browser may have blocked autoplay or the audio failed to load. Try clicking the Play button again.');
+                });
+            } else {
+                // If browser doesn't return a promise, optimistically update UI
                 playButton.classList.add('playing');
                 playIcon.textContent = '⏸';
                 playText.textContent = 'Pause';
-
-                // Update attribution
-                const bird = gameState.currentBird;
-                document.getElementById('attribution').innerHTML = 
-                    `Recording by ${bird.recordist} | <a href="https://xeno-canto.org/${bird.xcId}" target="_blank">View on Xeno-canto (XC${bird.xcId})</a>`;
-
-                // Reset button when audio ends
-                gameState.currentAudio.onended = () => {
-                    playButton.classList.remove('playing');
-                    playIcon.textContent = '▶';
-                    playText.textContent = 'Play Bird Song';
-                };
             }
+
+            // Update attribution
+            const bird = gameState.currentBird;
+            document.getElementById('attribution').innerHTML =
+                `Recording by ${bird.recordist} | <a href="https://xeno-canto.org/${bird.xcId}" target="_blank">View on Xeno-canto (XC${bird.xcId})</a>`;
+
+            // Reset button when audio ends
+            audio.onended = () => {
+                playButton.classList.remove('playing');
+                playIcon.textContent = '▶';
+                playText.textContent = 'Play Bird Song';
+            };
         }
 
         // Start a new round
         function startNewRound() {
             gameState.answered = false;
-            
+
             // Stop any playing audio
             if (gameState.currentAudio) {
-                gameState.currentAudio.pause();
-                gameState.currentAudio.currentTime = 0;
+                try {
+                    gameState.currentAudio.pause();
+                    gameState.currentAudio.currentTime = 0;
+                } catch (e) {
+                    console.warn('Error stopping current audio', e);
+                }
             }
 
             // Reset play button
@@ -632,16 +782,16 @@
             playButton.classList.remove('playing');
             document.getElementById('playIcon').textContent = '▶';
             document.getElementById('playText').textContent = 'Play Bird Song';
-            
+
             // Determine number of birds based on difficulty
-            const numBirds = gameState.difficulty === 'easy' ? 4 : 
+            const numBirds = gameState.difficulty === 'easy' ? 4 :
                            gameState.difficulty === 'medium' ? 6 : 8;
-            
+
             // Select random birds for this round
             const shuffled = [...allBirds].sort(() => Math.random() - 0.5);
             gameState.roundBirds = shuffled.slice(0, numBirds);
             gameState.currentBird = gameState.roundBirds[Math.floor(Math.random() * numBirds)];
-            
+
             // Update UI
             updateStats();
             renderBirdCards();
@@ -663,7 +813,7 @@
         function renderBirdCards() {
             const grid = document.getElementById('birdGrid');
             grid.innerHTML = '';
-            
+
             gameState.roundBirds.forEach(bird => {
                 const card = document.createElement('div');
                 card.className = 'bird-card';
@@ -680,13 +830,17 @@
         // Handle bird selection
         function selectBird(bird, cardElement) {
             if (gameState.answered) return;
-            
+
             gameState.answered = true;
             const isCorrect = bird === gameState.currentBird;
-            
+
             // Stop audio
             if (gameState.currentAudio) {
-                gameState.currentAudio.pause();
+                try {
+                    gameState.currentAudio.pause();
+                } catch (e) {
+                    console.warn('Error pausing audio', e);
+                }
             }
 
             // Reset play button
@@ -694,12 +848,12 @@
             playButton.classList.remove('playing');
             document.getElementById('playIcon').textContent = '▶';
             document.getElementById('playText').textContent = 'Play Bird Song';
-            
+
             // Update card appearance
             document.querySelectorAll('.bird-card').forEach(c => c.classList.add('disabled'));
             cardElement.classList.remove('disabled');
             cardElement.classList.add(isCorrect ? 'correct' : 'incorrect');
-            
+
             // Show correct answer if wrong
             if (!isCorrect) {
                 document.querySelectorAll('.bird-card').forEach(c => {
@@ -710,7 +864,7 @@
                     }
                 });
             }
-            
+
             // Update score and message
             const resultMsg = document.getElementById('resultMessage');
             if (isCorrect) {
@@ -723,16 +877,16 @@
                 resultMsg.textContent = `❌ Not quite. That was a ${gameState.currentBird.name}.`;
                 resultMsg.className = 'result-message show incorrect';
             }
-            
+
             updateStats();
-            
+
             // Check if game is over
             if (gameState.round >= gameState.maxRounds) {
                 setTimeout(endGame, 2000);
             } else {
                 document.getElementById('nextButton').style.display = 'inline-block';
             }
-            
+
             document.getElementById('playButton').disabled = true;
             document.getElementById('replayButton').disabled = true;
         }
@@ -741,7 +895,7 @@
         function endGame() {
             const gameOverSection = document.getElementById('gameOverSection');
             const accuracy = Math.round((gameState.score / (gameState.maxRounds * 10)) * 100);
-            
+
             gameOverSection.innerHTML = `
                 <div class="game-over">
                     <h2>🏆 Game Complete!</h2>
