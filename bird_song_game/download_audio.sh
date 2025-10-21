@@ -2,7 +2,7 @@
 set -euo pipefail
 # Download bird audio files into bird_song_game/audio/
 # Usage: ./download_audio.sh
-DIR="$(cd ""$(dirname "$0")" && pwd)"
+DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="$DIR/audio"
 mkdir -p "$OUT_DIR"
 
@@ -24,4 +24,21 @@ declare -a urls=(
 # Download each URL, following redirects. Use a deterministic filename based on last URL segment (strip query).
 for url in "${urls[@]}"; do
   # extract last path segment, URL-decode percent-escapes for readability
-  file="")(basename "")(url%%\
+  file="$(basename "${url%%\?*}")"
+  # sanitize filename (replace %20 with underscore, etc.)
+  safe="$(printf '%s' "$file" | sed 's/%20/ /g; s/ /_/g; s/,/_/g; s/%2C/_/g; s/%2F/_/g')"
+  out="$OUT_DIR/$safe"
+  if [ -f "$out" ]; then
+    echo "Skipping existing: $safe"
+    continue
+  fi
+  echo "Downloading: $url -> $safe"
+  # -L follow redirects, -C - continue, --fail cause non-2xx to error
+  if ! curl -L -C - --fail -o "$out" "$url"; then
+    echo "Failed to download $url (skipping)"
+    # remove partial file if present
+    [ -f "$out" ] && rm -f "$out"
+  fi
+done
+
+echo "Downloaded files (or attempted) into $OUT_DIR"
