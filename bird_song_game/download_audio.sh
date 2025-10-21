@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Download bird audio files into bird_song_game/audio/
-# Usage: ./download_audio.sh
-DIR="$(cd "$(dirname "$0")" && pwd)"
-OUT_DIR="$DIR/audio"
+OUT_DIR="$(cd "$(dirname "$0")" && pwd)/audio"
 mkdir -p "$OUT_DIR"
-
-declare -a urls=(
+urls=(
 "https://xeno-canto.org/sounds/uploaded/ZNCDXTUOFL/XC134898-LS100612%20Turdus%20migratorius.mp3"
 "https://xeno-canto.org/sounds/uploaded/GYAUIPBVZF/XC413729-NOCA.mp3"
 "https://xeno-canto.org/sounds/uploaded/OHGBMINRHW/XC51630-Blue%20Jay.mp3"
@@ -20,25 +16,12 @@ declare -a urls=(
 "https://xeno-canto.org/sounds/uploaded/JVQVMCUUNY/XC420585-WTSP.mp3"
 "https://xeno-canto.org/sounds/uploaded/OTVUCVOMMQ/XC420588-COYE.mp3"
 )
-
-# Download each URL, following redirects. Use a deterministic filename based on last URL segment (strip query).
 for url in "${urls[@]}"; do
-  # extract last path segment, URL-decode percent-escapes for readability
   file="$(basename "${url%%\?*}")"
-  # sanitize filename (replace %20 with underscore, etc.)
-  safe="$(printf '%s' "$file" | sed 's/%20/ /g; s/ /_/g; s/,/_/g; s/%2C/_/g; s/%2F/_/g')"
+  safe="$(printf '%s' "$file" | sed 's/%20/_/g; s/,/_/g; s/%2C/_/g')"
   out="$OUT_DIR/$safe"
-  if [ -f "$out" ]; then
-    echo "Skipping existing: $safe"
-    continue
-  fi
-  echo "Downloading: $url -> $safe"
-  # -L follow redirects, -C - continue, --fail cause non-2xx to error
-  if ! curl -L -C - --fail -o "$out" "$url"; then
-    echo "Failed to download $url (skipping)"
-    # remove partial file if present
-    [ -f "$out" ] && rm -f "$out"
-  fi
+  if [ -f "$out" ]; then echo "Skipping $safe"; continue; fi
+  echo "Downloading $url -> $safe"
+  if ! curl -L --fail -o "$out" "$url"; then echo "Failed to download $url" >&2; rm -f "$out" || true; fi
 done
-
-echo "Downloaded files (or attempted) into $OUT_DIR"
+echo "Downloads complete -> $OUT_DIR"
