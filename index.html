@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Birdsong Game — Wingspan Quiz</title>
+  <style>
+    :root{--bg-start:#667eea;--bg-end:#764ba2;--muted:#718096}
+    html,body{height:100%;margin:0;font-family:Georgia,serif}
+    body{display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,var(--bg-start),var(--bg-end));padding:20px;color:#2d3748}
+    .container{width:100%;max-width:1100px;background:rgba(255,255,255,0.97);border-radius:12px;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.2)}
+    header{text-align:center;margin-bottom:12px}
+    .stats{display:flex;gap:18px;justify-content:center;margin-bottom:12px}
+    .audio-panel{padding:16px;border-radius:10px;background:linear-gradient(135deg,#fff5e6,#ffe8cc);border:2px solid #ffa500;text-align:center;margin-bottom:12px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+    .card{background:#fff;padding:12px;border-radius:10px;cursor:pointer;border:3px solid transparent;box-shadow:0 6px 18px rgba(0,0,0,.08)}
+    .card.correct{border-color:#48bb78;background:linear-gradient(135deg,#f0fff4,#c6f6d5)}
+    .card.incorrect{border-color:#f56565;background:linear-gradient(135deg,#fff5f5,#fed7d7)}
+    .btn{padding:10px 18px;border-radius:999px;border:0;cursor:pointer}
+    .btn-primary{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff}
+    .btn-accent{background:linear-gradient(135deg,#ffa500,#ff8c00);color:#fff}
+    .debug{font-family:monospace;font-size:12px;background:#f7fafc;padding:8px;border-radius:8px;max-height:160px;overflow:auto;display:none}
+    @media (max-width:640px){.stats{flex-direction:column;gap:8px}}
+  </style>
+</head>
+<body>
+  <div class="container" id="app">
+    <header><h1>🦜 Birdsong Game</h1><p style="color:var(--muted)">Listen to the recording and identify the bird by its song.</p></header>
+
+    <div class="stats" aria-hidden="false">
+      <div><div style="font-size:12px;color:var(--muted)">Round</div><div id="round" style="font-weight:700">1</div></div>
+      <div><div style="font-size:12px;color:var(--muted)">Score</div><div id="score" style="font-weight:700">0</div></div>
+      <div><div style="font-size:12px;color:var(--muted)">Streak</div><div id="streak" style="font-weight:700">0</div></div>
+    </div>
+
+    <div class="audio-panel" role="region" aria-label="Play bird song">
+      <div><strong>🎵 Mystery bird</strong></div>
+      <div style="margin-top:10px;">
+        <button id="playButton" class="btn btn-accent" disabled>▶ Play</button>
+        <button id="replayButton" class="btn" disabled>🔁 Replay</button>
+      </div>
+      <div id="attribution" style="margin-top:8px;color:var(--muted);font-size:13px"></div>
+    </div>
+
+    <div id="result" style="text-align:center;font-weight:700;margin-bottom:10px"></div>
+
+    <div class="grid" id="birdGrid" aria-live="polite"></div>
+
+    <div style="margin-top:12px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+      <button id="nextButton" class="btn btn-primary" style="display:none">Next ➜</button>
+      <select id="difficulty" class="btn" aria-label="Difficulty">
+        <option value="easy">Easy (4)</option>
+        <option value="medium" selected>Medium (6)</option>
+        <option value="hard">Hard (8)</option>
+      </select>
+      <button id="toggleDebug" class="btn">Show debug</button>
+    </div>
+
+    <div id="debug" class="debug" aria-hidden="true"></div>
+  </div>
+
+  <script src="./local_bird_data.js"></script>
+  <script src="./main.js"></script>
+</body>
+</html>
