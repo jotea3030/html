@@ -154,6 +154,21 @@
             line-height: 1.4;
         }
 
+        .debug-log {
+            margin-top: 12px;
+            font-family: monospace;
+            font-size: 12px;
+            color: #2d3748;
+            background: #f7fafc;
+            border: 1px dashed #cbd5e0;
+            padding: 10px;
+            max-height: 180px;
+            overflow: auto;
+            border-radius: 8px;
+            text-align: left;
+            white-space: pre-wrap;
+        }
+
         .bird-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -365,6 +380,7 @@
         <div id="gameContent" style="display: none;">
             <div class="info-box">
                 <p><strong>🎵 About the recordings:</strong> This game uses curated bird songs from professional field recordings. Each recording includes attribution and links to the full coll[...]
+                </p>
             </div>
 
             <div class="difficulty-selector">
@@ -398,6 +414,7 @@
                 </button>
                 <p style="margin-top: 15px; color: #718096; font-size: 0.9em;">Click to hear the mystery bird!</p>
                 <div class="attribution" id="attribution"></div>
+                <div id="debugLog" class="debug-log" aria-live="polite"></div>
             </div>
 
             <div class="result-message" id="resultMessage"></div>
@@ -529,30 +546,85 @@
             audioCache: {}
         };
 
-        // Helper: create audio element and try to load it (with crossOrigin)
+        // Debug logging helper: writes to console and debug panel
+        function formatTime(d = new Date()) {
+            return d.toISOString();
+        }
+        function logDebug(message, obj) {
+            const el = document.getElementById('debugLog');
+            const time = formatTime();
+            const text = `[${time}] ${message}` + (obj ? ` - ${String(obj)}` : '');
+            console.log(text, obj);
+            if (el) {
+                let extra = '';
+                if (obj instanceof Error) {
+                    extra = '\n' + (obj.stack || obj.message);
+                } else if (obj && typeof obj === 'object') {
+                    try { extra = '\n' + JSON.stringify(obj, null, 2); } catch (e) { extra = '\n[object]'; }
+                }
+                el.textContent = `${text}${extra}\n\n` + el.textContent;
+            }
+        }
+
+        // Helper: map MediaError codes to human-readable
+        function mediaErrorMessage(err) {
+            if (!err) return 'No MediaError';
+            const code = err.code;
+            switch (code) {
+                case 1: return 'MEDIA_ERR_ABORTED (1): fetching process aborted by user';
+                case 2: return 'MEDIA_ERR_NETWORK (2): error occurred when downloading';
+                case 3: return 'MEDIA_ERR_DECODE (3): error occurred when decoding';
+                case 4: return 'MEDIA_ERR_SRC_NOT_SUPPORTED (4): audio not supported or cross-origin blocked';
+                default: return `Unknown MediaError code: ${code}`;
+            }
+        }
+
+        // Helper: create audio element and attach robust error logging
         function createAudioElement(url) {
             const audio = new Audio();
-            // Set crossOrigin to anonymous to increase the chances of being able to decode/play cross-origin media
-            audio.crossOrigin = "anonymous";
+            audio.crossOrigin = "anonymous"; // improves CORS handling for decoding in some browsers
             audio.preload = 'auto';
             audio.src = url;
+
+            // Listen for HTMLMediaElement errors and log details
+            audio.addEventListener('error', (ev) => {
+                const e = ev?.target?.error;
+                const msg = mediaErrorMessage(e);
+                logDebug(`audio.error event for src=${audio.src}: ${msg}`, e || ev);
+            });
+
+            // Log network state and ready state changes
+            audio.addEventListener('loadeddata', () => logDebug(`loadeddata for src=${audio.src}, readyState=${audio.readyState}, networkState=${audio.networkState}`));
+            audio.addEventListener('canplaythrough', () => logDebug(`canplaythrough for src=${audio.src}, readyState=${audio.readyState}, networkState=${audio.networkState}`));
+            audio.addEventListener('stalled', () => logDebug(`stalled event for src=${audio.src}`));
+            audio.addEventListener('suspend', () => logDebug(`suspend event for src=${audio.src}`));
+            audio.addEventListener('waiting', () => logDebug(`waiting event for src=${audio.src}`));
+
             return audio;
         }
 
-        // Attempt to fetch as a fallback and return object URL
+        // Attempt to fetch as a fallback and return object URL; log details
         async function fetchAsBlobUrl(url) {
+            logDebug(`Attempting fetch fallback for ${url}`);
             try {
                 const resp = await fetch(url, { mode: 'cors' });
-                if (!resp.ok) throw new Error(`Fetch failed: ${resp.status}`);
+                logDebug(`Fetch response for ${url}: status=${resp.status}, type=${resp.type}, url=${resp.url}`);
+                if (!resp.ok) {
+                    throw new Error(`Fetch failed: ${resp.status} ${resp.statusText}`);
+                }
+                const contentType = resp.headers.get('content-type') || 'unknown';
+                logDebug(`Content-Type: ${contentType}`);
                 const blob = await resp.blob();
-                return URL.createObjectURL(blob);
+                const objUrl = URL.createObjectURL(blob);
+                logDebug(`Created object URL for ${url} -> ${objUrl}`);
+                return objUrl;
             } catch (err) {
-                console.warn('Fetch fallback failed for', url, err);
+                logDebug(`Fetch fallback failed for ${url}`, err);
                 throw err;
             }
         }
 
-        // Preload audio with fallbacks
+        // Preload audio with fallbacks and more logging
         async function preloadAudio() {
             const loadingSection = document.getElementById('loadingSection');
             const loadingDetail = loadingSection.querySelector('.loading-detail');
@@ -563,25 +635,24 @@
             for (const bird of allBirds) {
                 try {
                     loadingDetail.textContent = `Loading ${bird.name} (${loaded + 1}/${total})...`;
+                    logDebug(`Preloading audio for ${bird.name}: ${bird.audioUrl}`);
 
-                    // Create audio element with crossOrigin
                     let audio = createAudioElement(bird.audioUrl);
-
-                    // Try to wait for a canplaythrough or error. Some servers don't emit canplaythrough reliably,
-                    // so use a timeout and fallback to fetch->blob->objectURL if necessary.
-                    await new Promise(async (resolve, reject) => {
+                    await new Promise((resolve, reject) => {
                         let settled = false;
                         const onSuccess = () => {
                             if (settled) return;
                             settled = true;
                             cleanup();
+                            logDebug(`Preload success (event) for ${bird.name}`);
                             resolve();
                         };
-                        const onError = (e) => {
+                        const onError = (ev) => {
                             if (settled) return;
                             settled = true;
                             cleanup();
-                            reject(e || new Error('Audio error'));
+                            logDebug(`Preload error event for ${bird.name}`, ev);
+                            reject(ev || new Error('Audio preload error'));
                         };
                         const cleanup = () => {
                             audio.removeEventListener('canplaythrough', onSuccess);
@@ -597,39 +668,37 @@
                         try {
                             audio.load();
                         } catch (err) {
-                            // Some browsers may throw synchronously
-                            console.warn('audio.load() threw', err);
+                            logDebug(`audio.load() threw for ${bird.name}`, err);
                         }
 
-                        // After timeout, try fetch fallback (if not settled)
+                        // After timeout, try fetch -> blob fallback
                         setTimeout(async () => {
                             if (settled) return;
-                            // Try fetch fallback to create an object URL
+                            logDebug(`Preload timeout reached for ${bird.name}, trying fetch fallback`);
                             try {
                                 const blobUrl = await fetchAsBlobUrl(bird.audioUrl);
-                                // Replace audio.src with blob URL and wait for canplaythrough
                                 audio.src = blobUrl;
                                 audio.load();
-                                // Attach listener again; onSuccess/onError will handle resolution
+                                // keep listeners attached; success will resolve
                             } catch (err) {
                                 onError(err);
                             }
-                        }, 6000); // 6s timeout before fallback
+                        }, 6000);
                     });
 
-                    // If successful, store the audio element in cache
                     gameState.audioCache[bird.name] = audio;
+                    logDebug(`Cached audio element for ${bird.name}: src=${audio.src}`);
                     loaded++;
                 } catch (error) {
-                    console.warn(`Could not load audio for ${bird.name}:`, error);
-                    // Don't block the whole preload process; skip and move on.
+                    logDebug(`Could not preload audio for ${bird.name}`, error);
+                    // keep going; audio may be created on demand later
                     loaded++;
                 }
             }
 
-            // Hide loading, show game
             loadingSection.style.display = 'none';
             document.getElementById('gameContent').style.display = 'block';
+            logDebug('Preloading complete. Showing game UI.');
             initGame();
         }
 
@@ -643,19 +712,21 @@
             startNewRound();
         }
 
-        // Play bird song (toggle play/pause). Creates audio on demand if preload failed.
+        // Play bird song (toggle) with verbose logging
         async function playBirdSong() {
             const playButton = document.getElementById('playButton');
             const playIcon = document.getElementById('playIcon');
             const playText = document.getElementById('playText');
 
-            // If currently playing, pause and reset
+            logDebug('playBirdSong called', { currentBird: gameState.currentBird ? gameState.currentBird.name : null });
+
             if (gameState.currentAudio && !gameState.currentAudio.paused) {
                 try {
                     gameState.currentAudio.pause();
                     gameState.currentAudio.currentTime = 0;
+                    logDebug('Paused current audio and reset time');
                 } catch (e) {
-                    console.warn('Error pausing audio', e);
+                    logDebug('Error pausing current audio', e);
                 }
                 playButton.classList.remove('playing');
                 playIcon.textContent = '▶';
@@ -664,16 +735,18 @@
             }
 
             if (!gameState.currentBird) {
-                console.warn('No current bird selected for this round.');
+                logDebug('No current bird selected to play');
                 return;
             }
 
-            // Get cached audio or create it
+            // Try to obtain cached audio
             let audio = gameState.audioCache[gameState.currentBird.name];
+            logDebug('Audio cache lookup', { bird: gameState.currentBird.name, cached: !!audio });
+
             if (!audio) {
-                // Try to create a new Audio element and play it (on-demand)
+                logDebug('No cached audio, creating on-demand Audio', gameState.currentBird.audioUrl);
                 audio = createAudioElement(gameState.currentBird.audioUrl);
-                // Try to load it quickly and play; if CORS blocks, fetch fallback will be attempted
+
                 try {
                     await new Promise((resolve, reject) => {
                         let settled = false;
@@ -681,26 +754,31 @@
                             if (settled) return;
                             settled = true;
                             cleanup();
+                            logDebug('On-demand audio ready via event');
                             resolve();
                         };
-                        const onError = (e) => {
+                        const onError = (ev) => {
                             if (settled) return;
                             settled = true;
                             cleanup();
-                            reject(e || new Error('Audio error'));
+                            logDebug('On-demand audio error event', ev);
+                            reject(ev || new Error('Audio load error'));
                         };
                         const cleanup = () => {
                             audio.removeEventListener('canplaythrough', onReady);
                             audio.removeEventListener('loadeddata', onReady);
                             audio.removeEventListener('error', onError);
                         };
+
                         audio.addEventListener('canplaythrough', onReady, { once: true });
                         audio.addEventListener('loadeddata', onReady, { once: true });
                         audio.addEventListener('error', onError, { once: true });
-                        try { audio.load(); } catch (err) { console.warn(err); }
-                        // Fallback fetch after a short timeout:
+
+                        try { audio.load(); } catch (err) { logDebug('audio.load() threw (on-demand)', err); }
+
                         setTimeout(async () => {
                             if (settled) return;
+                            logDebug('On-demand load timeout, attempting fetch fallback');
                             try {
                                 const blobUrl = await fetchAsBlobUrl(gameState.currentBird.audioUrl);
                                 audio.src = blobUrl;
@@ -711,43 +789,49 @@
                         }, 5000);
                     });
                 } catch (err) {
-                    console.warn('On-demand audio load failed, trying fetch fallback:', err);
-                    try {
-                        const blobUrl = await fetchAsBlobUrl(gameState.currentBird.audioUrl);
-                        audio.src = blobUrl;
-                        // hope it will play; do not await further
-                    } catch (err2) {
-                        console.warn('Fetch fallback also failed:', err2);
-                    }
+                    logDebug('On-demand audio failed to ready, will still attempt to play (maybe blob fallback set)', err);
                 }
-                // Store audio in cache to reuse later
+
+                // store into cache even if it failed; we may have blob URL set
                 gameState.audioCache[gameState.currentBird.name] = audio;
             }
 
             gameState.currentAudio = audio;
+
             try {
                 audio.currentTime = 0;
             } catch (e) {
-                // currentTime might throw if audio not seekable yet
+                logDebug('Setting currentTime failed (may not be seekable yet)', e);
             }
 
-            // Attempt to play, and handle promise rejection (user gesture / autoplay policies)
-            const playPromise = audio.play();
-            if (playPromise !== undefined) {
-                playPromise.then(() => {
+            logDebug('Attempting audio.play()', { src: audio.src, readyState: audio.readyState, networkState: audio.networkState });
+
+            // audio.play() returns a promise in modern browsers; handle rejections
+            try {
+                const playResult = audio.play();
+                if (playResult && typeof playResult.then === 'function') {
+                    playResult.then(() => {
+                        logDebug('Playback started successfully');
+                        playButton.classList.add('playing');
+                        playIcon.textContent = '⏸';
+                        playText.textContent = 'Pause';
+                    }).catch((err) => {
+                        logDebug('Playback promise rejected', err);
+                        // Show a helpful message in UI as well as the debug log
+                        alert('Playback failed. The browser may have blocked autoplay or the audio failed to load. Check the debug log (panel) for details.');
+                        document.getElementById('attribution').textContent = 'Playback failed. See debug log for details.';
+                    });
+                } else {
+                    // older browsers may not return promise
                     playButton.classList.add('playing');
                     playIcon.textContent = '⏸';
                     playText.textContent = 'Pause';
-                }).catch((err) => {
-                    console.warn('Playback failed:', err);
-                    // Inform the user in a non-intrusive way
-                    alert('Playback failed. The browser may have blocked autoplay or the audio failed to load. Try clicking the Play button again.');
-                });
-            } else {
-                // If browser doesn't return a promise, optimistically update UI
-                playButton.classList.add('playing');
-                playIcon.textContent = '⏸';
-                playText.textContent = 'Pause';
+                    logDebug('audio.play() did not return a promise, assuming success');
+                }
+            } catch (err) {
+                logDebug('audio.play() threw an exception', err);
+                alert('Playback failed. The browser may have blocked autoplay or the audio failed to load. Check the debug log (panel) for details.');
+                document.getElementById('attribution').textContent = 'Playback exception. See debug log for details.';
             }
 
             // Update attribution
@@ -757,6 +841,7 @@
 
             // Reset button when audio ends
             audio.onended = () => {
+                logDebug('audio ended event for src=' + audio.src);
                 playButton.classList.remove('playing');
                 playIcon.textContent = '▶';
                 playText.textContent = 'Play Bird Song';
@@ -772,8 +857,9 @@
                 try {
                     gameState.currentAudio.pause();
                     gameState.currentAudio.currentTime = 0;
+                    logDebug('Stopped previous audio for new round');
                 } catch (e) {
-                    console.warn('Error stopping current audio', e);
+                    logDebug('Error stopping current audio at round start', e);
                 }
             }
 
@@ -792,6 +878,8 @@
             gameState.roundBirds = shuffled.slice(0, numBirds);
             gameState.currentBird = gameState.roundBirds[Math.floor(Math.random() * numBirds)];
 
+            logDebug('Started new round', { round: gameState.round, currentBird: gameState.currentBird.name });
+
             // Update UI
             updateStats();
             renderBirdCards();
@@ -800,6 +888,7 @@
             document.getElementById('playButton').disabled = false;
             document.getElementById('replayButton').disabled = false;
             document.getElementById('attribution').innerHTML = '';
+            document.getElementById('debugLog').textContent = ''; // clear previous debug messages per round
         }
 
         // Update game statistics
@@ -839,7 +928,7 @@
                 try {
                     gameState.currentAudio.pause();
                 } catch (e) {
-                    console.warn('Error pausing audio', e);
+                    logDebug('Error pausing audio on selection', e);
                 }
             }
 
@@ -878,6 +967,8 @@
                 resultMsg.className = 'result-message show incorrect';
             }
 
+            logDebug('Selection made', { selected: bird.name, correct: isCorrect, target: gameState.currentBird.name });
+
             updateStats();
 
             // Check if game is over
@@ -910,6 +1001,7 @@
                 </div>
             `;
             gameOverSection.style.display = 'block';
+            logDebug('Game ended', { score: gameState.score, accuracy });
         }
 
         // Event listeners
@@ -928,6 +1020,7 @@
         });
 
         // Start preloading audio on page load
+        logDebug('Page load: starting audio preload');
         preloadAudio();
     </script>
 </body>
